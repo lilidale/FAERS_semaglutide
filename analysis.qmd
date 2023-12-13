@@ -1,0 +1,390 @@
+---
+format:
+  pdf:
+    toc: false
+    number-sections: false
+    colorlinks: true
+---
+
+# Are Adverse Events of Semaglutide Different for Weight Control and Type II Diabetes?
+
+Li Li\
+December 15, 2023\
+BST 260 Introduction to Data Science\
+SM 60 Biostatistics
+
+## 1. Introduction
+
+## 2. Methods
+
+### 2.1. Data
+
+### 2.2. Data Wragling and Web Scrapping
+
+### 2.3. Logistic Regression
+
+## 3. Results
+
+## 4. Conclusion
+
+```{r,echo=FALSE,message=FALSE}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(rvest)
+library(vctrs)
+library(gam)
+library(GGally)
+library(caret)
+```
+
+```{r}
+# https://fis.fda.gov/sense/app/95239e26-e0be-42d9-a960-9a5f7f1c25ee/sheet/7a47a261-d58b-4203-a8aa-6d3021737452/state/analysis
+dat = read_xlsx("FAERS_Semaglutide.xlsx")
+```
+
+```{r}
+dat
+```
+
+
+```{r,warning=FALSE}
+# data cleaning
+# clean reason for use
+ifdiab = function(s) {grepl("Diabetes", s, fixed=TRUE)}
+
+ifwl = function(s) {grepl("Weight", s, fixed=TRUE) | 
+    grepl("weight", s, fixed=TRUE) |
+    grepl("Obesity", s, fixed=TRUE)}
+
+# clean suspect product of use
+whichprod = function(s) {
+  out = rep(NA, length(s))
+  for (i in 1:length(s)){
+    if (grepl("-", s[i], fixed=TRUE)) {out[i] = NA}
+    else if (grepl("Wegovy", s[i], fixed=TRUE)) {out[i] = "Wegovy"}
+    else if (grepl("Ozempic", s[i], fixed=TRUE)) {out[i] = "Ozempic"}
+    else if (grepl("Rybelsus", s[i], fixed=TRUE)) {out[i] = "Rybelsus"}
+    else {out[i] = "Others"}
+  }
+  out
+}
+
+# clean patient age with various units in a string
+whichage = function(s) { # in years
+  out = rep(NA, length(s))
+  for (i in 1:length(s)){
+    if (grepl("Not Specified", s[i], fixed=TRUE)) {out[i] = NA}
+    else if (grepl("YR", s[i], fixed=TRUE)) {
+      out[i] = as.numeric(gsub("\\D", "", s[i]))}
+    else if (grepl("MTH", s[i], fixed=TRUE)) {
+      out[i] = round(as.numeric(gsub("\\D", "", s[i])) / 12)}
+    else if (grepl("DEC", s[i], fixed=TRUE)) {
+      out[i] = as.numeric(gsub("\\D", "", s[i])) * 10}
+    else if (grepl("DAY", s[i], fixed=TRUE)) {
+      out[i] = round(as.numeric(gsub("\\D", "", s[i])) / 365)}
+    else if (grepl("WEEK", s[i], fixed=TRUE)) {
+      out[i] = round(as.numeric(gsub("\\D", "", s[i])) / 52)}
+    else {out[i] = 999} # for debug use
+  }
+  as.numeric(out)
+}
+
+# clean patient weight with various units in a string
+whichwt = function(s) { # in kg
+  out = rep(NA, length(s))
+  for (i in 1:length(s)){
+    if (grepl("Not Specified", s[i], fixed=TRUE)) {out[i] = NA}
+    else if (grepl("KG", s[i], fixed=TRUE)) {
+      out[i] = as.numeric(str_extract(s[i], "\\d+\\.*\\d*"))}
+    else if (grepl("LB", s[i], fixed=TRUE)) {
+      out[i] = as.numeric(str_extract(s[i], "\\d+\\.*\\d*")) * 0.45}
+    else {out[i] = 999} # for debug use
+  }
+  as.numeric(out)
+}
+
+# clean outcome to levels: died, hospitalized, others
+
+whichoutcome = function(s) {
+  out = rep(NA, length(s))
+  for (i in 1:length(s)){
+    if (grepl("Died", s[i], fixed=TRUE)) {out[i] = "Died"}
+    else if (grepl("Hospitalized", s[i], fixed=TRUE)) {
+      out[i] = "	Hospitalized"}
+    else {out[i] = "Others"}
+  }
+  out
+}
+
+# cleaned dataset:
+dat1 = dat %>% mutate(reason = ifelse(ifdiab(`Reason for Use`),
+                                      "Diabetes", 
+                                      ifelse(ifwl(`Reason for Use`),
+                                             "Weight", "Others"))) %>% 
+  rename("product" = "Suspect Product Names",
+         "date" = "Event Date",
+         "age" = "Patient Age",
+         "weight" = "Patient Weight",
+         "country" = "Country where Event occurred") %>% 
+  mutate(country = ifelse(country == "Not Specified", NA, country),
+         product = whichprod(product),
+         age = whichage(age),
+         weight = whichwt(weight),
+         year = as.numeric(str_extract(date, "20\\d+")), # clean date
+         month = match(str_extract(date, "[[:alpha:]]+"),
+                       toupper(month.abb)),
+         date = dmy(date),
+         Sex = ifelse(Sex == "Not Specified", NA, Sex),
+         Outcomes = whichoutcome(Outcomes)) %>% 
+  mutate(country = as.factor(country),
+         reason = factor(reason, levels = c("Others", 
+                                            "Weight", "Diabetes")),
+         product = factor(product, levels = c("Ozempic", "Wegovy",
+                                              "Rybelsus", "Others")),
+         Serious = as.factor(Serious),
+         Outcomes = as.factor(Outcomes),
+         Sex = as.factor(Sex)) %>% 
+  select(product, reason, Serious, Outcomes, Sex, date, year, 
+         month, age, weight, country) %>% 
+  filter(year >= 2018 & year <= 2022) %>% 
+  mutate(quarter = ceiling(month / 3))
+# because of sample size: study 2018-2022
+
+# for debug use: 
+# dat[which(dat1$weight == 999),]
+```
+
+
+In the variable `Reason of Use`, 
+
+The majority of others is simply not specified and thus not indicative. Others also include reasons like dyspepsia (indigestion), glucose tolerance impaired, glycosylated hemoglobin increased, etc., which are diet, glucose, and insulin related, but can not be clearly classified without more details provided.
+
+
+
+```{r}
+p.advTrend = dat1 %>% ggplot(aes(x = year, fill = reason)) +
+  geom_bar() +
+  scale_fill_manual(values = c("grey", "aquamarine2", "aquamarine4")) +
+  theme_bw() +
+  labs(title = "Number of adverse event of Semaglutide over years",
+       subtitle = "Stratified by reason of use")
+
+p.advTrend
+```
+
+
+Immediately we can see that the increasing trend of adverse event number is not as sharp as that of prescription number over the years. 
+
+```{r}
+# web scrapping of prescription 2018-2020
+clincalc <- read_html("https://clincalc.com/DrugStats/Drugs/Semaglutide")
+```
+
+
+```{r}
+clincalc.fig1 = html_nodes(clincalc, "script")[5] %>% html_text 
+
+presc = str_extract_all(clincalc.fig1, "20\\d{2}.*?]")[[1]] %>% 
+  str_extract_all("\\d*") %>% as.data.frame
+colnames(presc) = c(1, 2, 3)
+presc = t(presc)[, c(1, 4, 6)] %>% as.data.frame 
+colnames(presc) = c("year", "n_prescriptions_yr", "n_patients_yr")
+presc = mutate(presc, year = as.numeric(year),
+               n_prescriptions_yr = as.numeric(n_prescriptions_yr),
+               n_patients_yr = as.numeric(n_patients_yr))
+```
+
+```{r}
+# web scrapping of patients 2020-2022
+# https://www.trillianthealth.com/insights/the-compass/patients-prescribed-drugs-like-ozempic-and-mounjaro-have-increased-over-300-percent
+
+# hard coded because sadly found the data on web is png
+trilliant = data.frame(year = c(2020, 2020, 2020, 2020,
+                                2021, 2021, 2021, 2021,
+                                2022, 2022, 2022, 2022),
+                       #percent change compared to Q1 2020
+                       change = c(0, 0.13, 0.25, 0.36,
+                                  0.53, 0.79, 1.17, 1.53,
+                                  1.94, 2.52, 3.55, NA),
+                       quarter = c(1, 2, 3, 4, 
+                                   1, 2, 3, 4,
+                                   1, 2, 3, 4),
+                       share_diab = c(0.767, 0.772, 0.774, 0.775,
+                                      0.773, 0.761, 0.705, 0.666,
+                                      0.634, 0.615, 0.570, NA),
+                       share_wt = c(0.0044, 0.0046, 0.0049, 0.0051,
+                                    0.0058, 0.0070, 0.0079, 0.0085,
+                                    0.0088, 0.0092, 0.0093, NA))
+
+# impute 2022 Q4 change based on GAM regression
+# for further investigation.
+timestamp = 1:11
+mod.c = gam(trilliant$change[1:11] ~ s(timestamp), 
+           data = trilliant)
+trilliant[12, 2] = predict(mod.c, newdata = data.frame(timestamp = 12))
+mod.diab = gam(trilliant$share_diab[1:11] ~ s(timestamp), 
+           data = trilliant)
+trilliant[12, 4] = predict(mod.diab, newdata = data.frame(timestamp = 12))
+mod.wt = gam(trilliant$share_wt[1:11] ~ s(timestamp), 
+           data = trilliant)
+trilliant[12, 5] = predict(mod.wt, newdata = data.frame(timestamp = 12))
+
+# manipulation: convert change into n_patients based on clincalc info
+presc2 = trilliant %>% mutate(change = change + 1) %>% 
+  group_by(year) %>% 
+  summarize(change = sum(change)) 
+
+presc.quarter = trilliant %>% mutate(change = change + 1) %>% 
+  mutate(n_patients_diab_q = round(share_diab * change * 
+           as.numeric(presc[3, 3])/as.numeric(presc2[1, 2])),
+         n_patients_wt_q = round(share_wt * change * 
+           as.numeric(presc[3, 3])/as.numeric(presc2[1, 2]))) %>% 
+  select(year, quarter, n_patients_diab_q, n_patients_wt_q)
+
+presc2 = presc2 %>% 
+  mutate(n_patients_yr = change * 
+           as.numeric(presc[3, 3])/as.numeric(presc2[1, 2])) %>% 
+  select(-change) %>% 
+  rbind(presc[-3, -2])
+dat2 = dat1 %>% 
+  left_join(presc2, by = "year") %>% 
+  left_join(presc.quarter, by = c("year", "quarter"))
+```
+
+
+```{r}
+dat2
+```
+
+
+```{r}
+p.prescTrend = dat2 %>% group_by(year) %>% 
+  summarize(n_patients_yr = unique(n_patients_yr)) %>% 
+  ggplot(aes(x = year, y = n_patients_yr)) +
+  geom_bar(stat='identity') +
+  labs(y = "count",
+       title = "Number of patients prescribed of Semaglutide over years",
+       subtitle = "") +
+  theme_bw()
+
+p.prescTrend
+```
+
+```{r}
+p.rateAll = dat2 %>% group_by(year) %>% 
+  summarize(n_patients_yr = unique(n_patients_yr),
+            n_adv = n()) %>% 
+  ggplot(aes(x = year, y = n_adv/n_patients_yr)) +
+  geom_line(stat='identity') +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(y = "rate",
+       title = "Rate of adverse event of Semaglutide over years",
+       subtitle = "Per patient prescribed") +
+  theme_bw()
+
+p.rateAll
+```
+
+
+```{r}
+# now shift our focus to reasons of use
+# because of limited data, we can only analyze 2020 - 2022 data
+
+years <- c("2020", "2021", "2022")
+quarters <- c("Q1", "Q2", "Q3", "Q4")
+labels <- c()
+for (year in years) {
+    for (quarter in quarters) {
+        labels <- c(labels, paste0(year, " ", quarter))
+    }
+}
+
+# new dat dimension after getting rid of NA: 3996 x 16
+p.rateDiv = dat2 %>% filter(year >= 2020) %>% 
+  mutate(timestamp = (year - 2020)*4 + quarter) %>% 
+  filter(reason != "Others") %>% 
+  filter(!is.na(timestamp)) %>% 
+  group_by(timestamp, year, quarter, reason, n_patients_diab_q, 
+           n_patients_wt_q) %>% 
+  summarize(count = n(),
+            .groups = "drop") %>% 
+  mutate(rate = ifelse(reason == "Diabetes", count/n_patients_diab_q,
+                       count/n_patients_wt_q)) %>% 
+  ggplot(aes(x = timestamp, y = rate, group = reason, color = reason)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = 1:12,
+                     labels = labels) +
+  scale_color_manual(values = c("aquamarine2", "aquamarine4")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) +
+  labs(x = "time", 
+       title ="Rate of adverse event of Semaglutide over years",
+       subtitle = "Per patient prescribed, stratified by reason of use")
+
+p.rateDiv
+```
+
+
+logistic regression
+
+missing data analysis
+
+36.9% of the resons are `Others`. Missingness is only related to year. Assume MAR.
+
+```{r}
+missing = dat2 %>% 
+  mutate(isOthers = ifelse(reason == "Others", 1, 0)) %>% 
+  select(product, reason, Serious, Outcomes, Sex, year, 
+         age, weight, country, isOthers)
+
+tbl_missing = missing %>% apply(2, FUN = function(col) {
+  mean(is.na(col))
+})
+
+# select columns with at least 90% data not missing
+# dropped Outcomes because too many levels
+missing.mod = glm(isOthers ~ product + Serious +
+                    Sex + year + country,
+                  family = binomial(), data = missing) 
+# summary(missing.mod)
+
+# final data set for regression analysis
+dat3 = missing %>% select(product, reason, Serious, Outcomes,
+                          Sex, year, age) %>% 
+  filter(!is.na(product) & !is.na(Sex) & !is.na(age)) %>% 
+  mutate(reason = ifelse(reason == "Diabetes", 0, 1)) %>% 
+  filter(reason != "Others")
+```
+
+
+```{r}
+#ggpairs(dat3)
+```
+
+```{r}
+# reason: 1-weight, 0-diabetes
+mod1 = glm(as.factor(reason) ~ product + Serious + Outcomes + Sex 
+           + s(year) + age,
+           family = binomial(), data = dat3) 
+
+summary(mod1)
+
+p <- predict(mod1, type = "response")
+pred <- as.factor(round(p))
+
+dat3.pred = dat3 %>% mutate(logit = log(p/(1-p)),
+                            pred = pred)
+
+# accuracy
+mean(dat3$reason == pred)
+```
+
+
+
+
+
+
+
